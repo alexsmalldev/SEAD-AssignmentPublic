@@ -1,0 +1,153 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run Vitest
+        run: npx vitest run
+  test-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run migrations
+        run: python manage.py migrate
+
+      - name: Run tests
+        run: python manage.py test requestAPI.tests
+
+  build-and-deploy:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    environment: ec2-deploy
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push backend image
+        run: |
+          TAG=${{ github.sha }}
+          docker build -t alexsmalldev/alexsmalldev-sead-assignment:backend-$TAG ./backend
+          docker push alexsmalldev/alexsmalldev-sead-assignment:backend-$TAG
+
+      - name: Install frontend dependencies and build
+        working-directory: ./frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Copy React build to EC2
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "frontend/dist/*"
+          target: "/tmp/react-build"
+
+      - name: Copy docker-compose file to EC2
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "docker-compose.yml"
+          target: "~/sead-deploy"
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            cd ~/sead-deploy
+
+            echo "Injecting environment variables..."
+            mkdir -p backend
+            cat > backend/.env << EOF
+            DJANGO_ENV=production
+            DEBUG=False
+            SECRET_KEY=${{ secrets.SECRET_KEY }}
+            JWT_SIGNING_KEY=${{ secrets.JWT_SIGNING_KEY }}
+            ALLOWED_HOSTS=${{ vars.ALLOWED_HOSTS }}
+            CORS_ALLOWED_ORIGINS=${{ vars.CORS_ALLOWED_ORIGINS }}
+            DB_NAME=${{ vars.DB_NAME }}
+            DB_USER=${{ vars.DB_USER }}
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+            DB_HOST=${{ vars.DB_HOST }}
+            DB_PORT=${{ vars.DB_PORT }}
+            POSTGRES_DB=${{ vars.POSTGRES_DB }}
+            POSTGRES_USER=${{ vars.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+            AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            AWS_STORAGE_BUCKET_NAME=${{ vars.AWS_STORAGE_BUCKET_NAME }}
+            AWS_S3_REGION_NAME=${{ vars.AWS_S3_REGION_NAME }}
+            AWS_S3_CUSTOM_DOMAIN=${{ vars.AWS_S3_CUSTOM_DOMAIN }}
+            EOF
+
+            echo "Logging in to Docker..."
+            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+            echo "Starting containers..."
+            docker-compose pull
+            docker-compose down --remove-orphans
+            docker-compose up -d --build
+
+            echo "Applying Django migrations..."
+            docker-compose exec -T backend python manage.py migrate
+
+            echo "Creating superuser..."
+            docker-compose exec -T backend python manage.py shell << EOF
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+            username = '${{ secrets.SUPERUSER_NAME }}'
+            email = '${{ secrets.SUPERUSER_EMAIL }}'
+            password = '${{ secrets.SUPERUSER_PASSWORD }}'
+            if not User.objects.filter(username=username).exists():
+                User.objects.create_superuser(username, email, password)
+                print("Superuser created.")
+            else:
+                print("Superuser already exists.")
+            EOF
+
+            echo "Deploying frontend static to NGINX..."
+            sudo mkdir -p /usr/share/nginx/html
+            sudo rm -rf /usr/share/nginx/html/*
+            sudo cp -r /tmp/react-build/frontend/dist/* /usr/share/nginx/html/
