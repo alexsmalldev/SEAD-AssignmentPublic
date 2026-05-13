@@ -127,6 +127,7 @@ jobs:
             AWS_STORAGE_BUCKET_NAME=${{ vars.AWS_STORAGE_BUCKET_NAME }}
             AWS_S3_REGION_NAME=${{ vars.AWS_S3_REGION_NAME }}
             AWS_S3_CUSTOM_DOMAIN=${{ vars.AWS_S3_CUSTOM_DOMAIN }}
+            SQS_NOTIFICATION_QUEUE_URL=${{ vars.SQS_NOTIFICATION_QUEUE_URL }}
             EOF
 
             echo "Logging in to Docker..."

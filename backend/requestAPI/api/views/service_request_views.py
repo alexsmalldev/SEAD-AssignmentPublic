@@ -7,7 +7,7 @@ from ...models import ServiceRequest, Update, User, ServiceType
 from ...serializers import ServiceRequestSerializer, ServiceTypeSerializer
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
-from requestAPI.utils import send_notification_to_user
+from requestAPI.utils import send_notification_to_user, publish_notification
 
 class ServiceRequestViewSet(viewsets.ModelViewSet):
     serializer_class = ServiceRequestSerializer
@@ -55,6 +55,7 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['patch'])
     def update_status(self, request, pk=None):
         service_request = self.get_object()
+        previous_status = service_request.status
         serializer = self.get_serializer(service_request, data=request.data, partial=True)
         
         if serializer.is_valid():
@@ -82,10 +83,24 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
                             "type": status_update.type
                 }
                 send_notification_to_user(service_request.created_by.id, notification)
+                publish_notification({
+                    "requestId": service_request.id,
+                    "type": "STATUS_CHANGED",
+                    "recipientEmail": service_request.created_by.email,
+                    "recipientName": service_request.created_by.get_full_name(),
+                    "recipientRole": "customer",
+                    "service": service_request.service_request_item.name,
+                    "building": service_request.building.name,
+                    "priority": service_request.priority,
+                    "slaDate": service_request.service_level_agreement_date.isoformat(),
+                    "timestamp": status_update.created_date.isoformat(),
+                    "previousStatus": previous_status,
+                    "newStatus": new_status
+                })
 
             comment = request.data.get('comment')
             if comment:
-                Update.objects.create(
+                comment_update = Update.objects.create(
                     title=f"A Comment has been added to Request {service_request.id}",
                     message=comment,
                     created_by=request.user,
@@ -93,6 +108,22 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
                     service_request=service_request,
                     type="message"
                 )
+
+                publish_notification({
+                    "requestId": service_request.id,
+                    "type": "COMMENT_ADDED",
+                    "recipientEmail": service_request.created_by.email,
+                    "recipientName": service_request.created_by.get_full_name(),
+                    "recipientRole": "customer",
+                    "service": service_request.service_request_item.name,
+                    "building": service_request.building.name,
+                    "priority": service_request.priority,
+                    "slaDate": service_request.service_level_agreement_date.isoformat(),
+                    "timestamp": comment_update.created_date.isoformat(),
+                    "commentAuthor": request.user.get_full_name(),
+                    "commentContent": comment
+                })
+                
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
      

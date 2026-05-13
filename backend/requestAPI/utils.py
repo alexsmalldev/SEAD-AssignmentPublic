@@ -3,6 +3,29 @@ from .models import ErrorLog
 import traceback
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
+import boto3
+import json
+import logging
+import os
+
+logger = logging.getLogger(__name__)
+
+sqs = boto3.client('sqs', region_name='eu-north-1')
+
+QUEUE_URL = os.environ.get('SQS_NOTIFICATION_QUEUE_URL')
+
+def publish_notification(payload: dict) -> None:
+    if not QUEUE_URL:
+        logger.error('SQS_NOTIFICATION_QUEUE_URL environment variable is not set')
+        return
+    try:
+        sqs.send_message(
+            QueueUrl=QUEUE_URL,
+            MessageBody=json.dumps(payload)
+        )
+        logger.info(f"Notification published to SQS for request {payload.get('requestId')}")
+    except Exception as e:
+        logger.error(f"Failed to publish notification to SQS: {str(e)}")
 
 def send_notification_to_user(user_id, notification):
     channel_layer = get_channel_layer()
@@ -23,6 +46,3 @@ def error_log_exception_handler(exc, context):
             error_message=f"{str(exc)}\n{traceback.format_exc()}",
         )
     return response
-
-
-
