@@ -146,7 +146,7 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
             'recent_requests': recent_requests_serialized,
             'recent_service_types': recent_service_types_serialized,
         })
-
+    
     
         
 
