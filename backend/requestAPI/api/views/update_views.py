@@ -9,7 +9,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from ...models import Update, ServiceRequest
 from ...serializers import UpdateSerializer
 from django.shortcuts import get_object_or_404
-from requestAPI.utils import send_notification_to_user
+from requestAPI.utils import send_notification_to_user, publish_notification
 
 class UpdateViewSet(viewsets.ModelViewSet):
     serializer_class = UpdateSerializer
@@ -72,6 +72,20 @@ class UpdateViewSet(viewsets.ModelViewSet):
                 "type": update.type
             }
             send_notification_to_user(associated_to.id, notification)
+            publish_notification({
+                "requestId": service_request.id,
+                "type": "COMMENT_ADDED",
+                "recipientEmail": associated_to.email,
+                "recipientName": associated_to.get_full_name() or associated_to.username,
+                "recipientRole": "customer",
+                "service": service_request.service_request_item.name,
+                "building": service_request.building.name,
+                "priority": service_request.priority,
+                "slaDate": service_request.service_level_agreement_date.isoformat(),
+                "timestamp": update.created_date.isoformat(),
+                "commentAuthor": self.request.user.get_full_name() or self.request.user.username,
+                "commentContent": update.message
+            })
 
     @action(detail=False, methods=['get', 'post'])
     def service_request_updates(self, request):
@@ -108,6 +122,22 @@ class UpdateViewSet(viewsets.ModelViewSet):
                     associated_to=associated_to_user
                 )
                 serializer = UpdateSerializer(update)
+                if associated_to_user:
+                    publish_notification({
+                        "requestId": service_request.id,
+                        "type": "COMMENT_ADDED",
+                        "recipientEmail": associated_to_user.email,
+                        "recipientName": associated_to_user.get_full_name() or associated_to_user.username,
+                        "recipientRole": "customer",
+                        "service": service_request.service_request_item.name,
+                        "building": service_request.building.name,
+                        "priority": service_request.priority,
+                        "slaDate": service_request.service_level_agreement_date.isoformat(),
+                        "timestamp": update.created_date.isoformat(),
+                        "commentAuthor": request.user.get_full_name() or request.user.username,
+                        "commentContent": message
+                    })
+
                 return Response(serializer.data, status=status.HTTP_201_CREATED)
 
             except Exception as e:
